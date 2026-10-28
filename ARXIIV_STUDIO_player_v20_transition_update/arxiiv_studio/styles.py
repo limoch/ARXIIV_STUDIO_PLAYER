@@ -4,6 +4,7 @@ thin hairline borders, bracketed section labels. Mirrors the reference UI.
 """
 
 FONT_FAMILY = "'JetBrains Mono', 'Consolas', 'Courier New', monospace"
+DEFAULT_ACCENT = "#B8FF3B"
 
 STYLE_SHEET = f"""
 * {{
@@ -74,6 +75,24 @@ QPushButton:checked {{
 QPushButton:disabled {{
     color: #555555;
     border: 1px solid #222222;
+}}
+QPushButton#accentColorButton {{
+    border: 1px solid {DEFAULT_ACCENT};
+    color: {DEFAULT_ACCENT};
+}}
+QPushButton#transitionPill {{
+    border: 1px solid {DEFAULT_ACCENT};
+    border-radius: 11px;
+    color: {DEFAULT_ACCENT};
+    padding: 3px 10px;
+    min-height: 18px;
+    max-height: 20px;
+    font-size: 9px;
+    font-weight: bold;
+}}
+QPushButton#transitionPill:hover {{
+    background: {DEFAULT_ACCENT};
+    color: #000000;
 }}
 
 QPushButton#danger:checked {{

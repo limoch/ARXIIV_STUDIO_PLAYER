@@ -82,7 +82,7 @@ class AudioReactivePlayer(QObject):
         self.track_changed.emit(path)
         self._reset_analysis()
 
-    def start_crossfade(self, next_path, duration_ms, start_ms=0):
+    def start_crossfade(self, next_path, duration_ms, start_ms=0, curve="Blend"):
         if self._crossfade is not None:
             return False
         if not next_path or not os.path.isfile(next_path):
@@ -100,6 +100,7 @@ class AudioReactivePlayer(QObject):
             "start_ms": max(0, int(start_ms)),
             "started": None,
             "loaded": False,
+            "curve": str(curve),
         }
         self._pending_crossfade = self._crossfade
         self._crossfade_retry_count = 0
@@ -155,8 +156,18 @@ class AudioReactivePlayer(QObject):
             return
         elapsed = (time.monotonic() - cf["started"]) * 1000.0
         t = max(0.0, min(1.0, elapsed / cf["duration"]))
-        old_vol = self._base_volume * (1.0 - t)
-        new_vol = self._base_volume * t
+        curve = cf.get("curve", "Blend")
+        if curve == "Blend":
+            old_gain = np.cos(t * np.pi / 2.0)
+            new_gain = np.sin(t * np.pi / 2.0)
+        elif curve == "Rise":
+            old_gain, new_gain = 1.0 - t, np.sqrt(t)
+        elif curve == "Slam":
+            old_gain, new_gain = (1.0 if t < 0.72 else max(0.0, (1.0 - t) / 0.28)), (0.0 if t < 0.72 else (t - 0.72) / 0.28)
+        else:  # Fade
+            old_gain, new_gain = 1.0 - t, t
+        old_vol = self._base_volume * old_gain
+        new_vol = self._base_volume * new_gain
         self._outputs[cf["old"]].setVolume(old_vol)
         self._outputs[cf["new"]].setVolume(new_vol)
         if t >= 1.0:

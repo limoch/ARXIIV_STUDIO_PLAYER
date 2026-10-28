@@ -22,12 +22,14 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QGridLayout, QScrollArea, QListWidget,
     QListWidgetItem, QSlider, QColorDialog, QFileDialog, QKeySequenceEdit,
     QCheckBox, QSizePolicy, QLineEdit, QAbstractItemView, QGraphicsOpacityEffect, QMenu, QInputDialog, QSplitter,
+    QDialog, QFormLayout, QSpinBox, QDialogButtonBox, QGroupBox,
 )
 
 from display_window import (
     DisplayWindow, ALL_BACKGROUND_EXTENSIONS, ELEMENT_EXTENSIONS,
 )
 from audio_player import AudioReactivePlayer
+from styles import STYLE_SHEET, DEFAULT_ACCENT
 
 
 AUDIO_EXTENSIONS = (".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".opus", ".wma")
@@ -332,6 +334,13 @@ class TrackTile(QWidget):
         self.play_hint.setFixedWidth(22)
         row.addWidget(self.play_hint)
 
+        self.transition_button = QPushButton("Transition")
+        self.transition_button.setObjectName("transitionPill")
+        self.transition_button.setFixedWidth(96)
+        self.transition_button.setCursor(Qt.PointingHandCursor)
+        self.transition_button.clicked.connect(lambda: self.queue.transition_requested.emit(self.path))
+        row.addWidget(self.transition_button)
+
         self._refresh_text()
         # Metadata/artwork is loaded off the UI thread so large playlists stay responsive.
         self._pool.start(CoverWorker(self, self.path))
@@ -536,6 +545,7 @@ class TrackQueueWidget(QScrollArea):
     selection_changed = Signal(int)
     order_changed = Signal()
     drag_state_changed = Signal(bool)
+    transition_requested = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1014,6 +1024,60 @@ class ColorSwatchButton(QPushButton):
         )
 
 
+class TransitionDialog(QDialog):
+    """Compact boundary editor; preview is a lightweight envelope view."""
+    def __init__(self, outgoing, incoming, settings, accent, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("EDIT TRANSITION")
+        self.setMinimumWidth(440)
+        self.setStyleSheet(f"QPushButton#previewTransition {{ color:{accent}; border-color:{accent}; }}")
+        root = QVBoxLayout(self)
+        title = QLabel(f"{outgoing}  →  {incoming}")
+        title.setWordWrap(True)
+        title.setStyleSheet("font-weight:bold; font-size:13px; padding:4px 0;")
+        root.addWidget(title)
+        form = QFormLayout()
+        self.bars = QSpinBox()
+        self.bars.setRange(1, 32)
+        self.bars.setValue(int(settings.get("bars", 4)))
+        self.bars.setSuffix(" bars")
+        form.addRow("DURATION", self.bars)
+        self.curve = QComboBox()
+        self.curve.addItems(["Blend", "Fade", "Rise", "Slam"])
+        self.curve.setCurrentText(settings.get("curve", "Blend"))
+        form.addRow("CURVE", self.curve)
+        self.eq = QComboBox()
+        self.eq.addItems(["Neutral", "Bass swap", "Low-pass sweep"])
+        self.eq.setCurrentText(settings.get("eq", "Neutral"))
+        form.addRow("EQ / FILTER", self.eq)
+        root.addLayout(form)
+        self.graph = QLabel()
+        self.graph.setMinimumHeight(118)
+        self.graph.setAlignment(Qt.AlignCenter)
+        self.graph.setStyleSheet("background:#090909; border:1px solid #333; color:#aaa; padding:14px;")
+        self._refresh_graph()
+        root.addWidget(self.graph)
+        self.bars.valueChanged.connect(self._refresh_graph)
+        self.curve.currentTextChanged.connect(self._refresh_graph)
+        row = QHBoxLayout()
+        preview = QPushButton("▶  PREVIEW CURVE")
+        preview.setObjectName("previewTransition")
+        preview.clicked.connect(self._refresh_graph)
+        row.addWidget(preview)
+        row.addStretch(1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Cancel | QDialogButtonBox.Save)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        row.addWidget(buttons)
+        root.addLayout(row)
+
+    def _refresh_graph(self, *_):
+        self.graph.setText(f"OUT  ━━━━━━━╲        ╱━━━━━━  IN\n\n{self.curve.currentText().upper()}  •  {self.bars.value()} BARS")
+
+    def values(self):
+        return {"bars": self.bars.value(), "curve": self.curve.currentText(), "eq": self.eq.currentText()}
+
+
 
 class SpectrumWidget(QWidget):
     """Compact live spectrum visualization for the operator monitor."""
@@ -1062,6 +1126,12 @@ class SpectrumWidget(QWidget):
 class ControlWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self._settings = QSettings()
+        saved_accent = QColor(self._settings.value("ui/accent", DEFAULT_ACCENT))
+        self._accent_color = saved_accent.name() if saved_accent.isValid() else DEFAULT_ACCENT
+        self._transitions = {}
+        if QApplication.instance() is not None:
+            QApplication.instance().setStyleSheet(STYLE_SHEET.replace(DEFAULT_ACCENT, self._accent_color))
         self.setWindowTitle("ARXIIV.STUDIO — CONTROL")
         self.resize(1280, 760)
         self.setMinimumSize(1080, 680)
@@ -1095,6 +1165,8 @@ class ControlWindow(QMainWindow):
         self._queue_loaded = False
 
         self._build_ui()
+        self.track_list.transition_requested.connect(self._edit_transition)
+        self._refresh_accent_button()
         self._build_shortcuts()
         self._load_queue_state()
 
@@ -1174,6 +1246,12 @@ class ControlWindow(QMainWindow):
         brand.setObjectName("brand")
         header.addWidget(brand)
         header.addStretch(1)
+
+        self.accent_button = QPushButton("ACCENT")
+        self.accent_button.setObjectName("accentColorButton")
+        self.accent_button.setToolTip("Choose the application accent color")
+        self.accent_button.clicked.connect(self._choose_accent_color)
+        header.addWidget(self.accent_button)
 
         header.addWidget(QLabel("SCREEN:"))
         self.screen_combo = QComboBox()
@@ -1893,6 +1971,7 @@ class ControlWindow(QMainWindow):
                 "current_index": self._audio_index,
                 "track_markers": self._track_markers,
                 "track_start_ms": self._track_start_ms,
+                "transitions": self._transitions,
             }
             # Write to a sibling temporary file and replace atomically. This
             # prevents a crash/power loss from truncating the only queue file.
@@ -1926,6 +2005,7 @@ class ControlWindow(QMainWindow):
                 raise ValueError("queue root must be a JSON object")
             self._track_markers = {os.path.abspath(k): str(v) for k, v in payload.get("track_markers", {}).items() if v}
             self._track_start_ms = {os.path.abspath(k): max(0, int(v)) for k, v in payload.get("track_start_ms", {}).items()}
+            self._transitions = payload.get("transitions", {}) if isinstance(payload.get("transitions", {}), dict) else {}
             tracks = [
                 os.path.abspath(p) for p in payload.get("tracks", [])
                 if os.path.isfile(p) and os.path.splitext(p)[1].lower() in AUDIO_EXTENSIONS
@@ -2091,7 +2171,9 @@ class ControlWindow(QMainWindow):
             return
 
         target_path = self._audio_tracks[target_index]
-        crossfade_enabled = bool(
+        pair = self._transition_key(self._audio_tracks[self._audio_index], target_path) if 0 <= self._audio_index < len(self._audio_tracks) else ""
+        cfg = self._transitions.get(pair, {})
+        crossfade_enabled = bool(cfg) or bool(
             getattr(self, "crossfade_checkbox", None)
             and self.crossfade_checkbox.isChecked()
         )
@@ -2102,8 +2184,8 @@ class ControlWindow(QMainWindow):
         self.audio.cancel_crossfade()
 
         if crossfade_enabled and self.audio.is_playing() and len(self._audio_tracks) > 1:
-            fade_ms = int(self.crossfade_slider.value()) * 1000
-            self._crossfade_triggered = self.audio.start_crossfade(target_path, fade_ms, self._track_start_ms.get(target_path, 0))
+            fade_ms = self._transition_duration(cfg)
+            self._crossfade_triggered = self.audio.start_crossfade(target_path, fade_ms, self._track_start_ms.get(target_path, 0), cfg.get("curve", "Blend"))
             if self._crossfade_triggered:
                 # Keep the logical index on the currently playing track until
                 # the fade completes; _on_crossfade_finished commits the target.
@@ -2138,14 +2220,18 @@ class ControlWindow(QMainWindow):
 
     def _maybe_crossfade(self, position, duration):
         """Start a lightweight crossfade near the end of the current track."""
-        if not getattr(self, "crossfade_checkbox", None) or not self.crossfade_checkbox.isChecked():
-            return
         if self._crossfade_triggered or len(self._audio_tracks) < 2:
             return
         if not (0 <= self._audio_index < len(self._audio_tracks)) or duration <= 0:
             return
 
-        fade_ms = int(self.crossfade_slider.value()) * 1000
+        next_index = (self._audio_index + 1) % len(self._audio_tracks)
+        next_path = self._audio_tracks[next_index]
+        pair = self._transition_key(self._audio_tracks[self._audio_index], next_path)
+        cfg = self._transitions.get(pair, {})
+        if not cfg and (not getattr(self, "crossfade_checkbox", None) or not self.crossfade_checkbox.isChecked()):
+            return
+        fade_ms = self._transition_duration(cfg)
         # Give the transition enough time to start, but avoid trying to crossfade
         # on very short tracks where the entire file is shorter than the fade.
         if duration <= fade_ms + 500:
@@ -2154,11 +2240,52 @@ class ControlWindow(QMainWindow):
         if remaining > fade_ms:
             return
 
-        next_index = (self._audio_index + 1) % len(self._audio_tracks)
         if next_index == self._audio_index:
             return
-        next_path = self._audio_tracks[next_index]
-        self._crossfade_triggered = self.audio.start_crossfade(next_path, fade_ms, self._track_start_ms.get(next_path, 0))
+        self._crossfade_triggered = self.audio.start_crossfade(next_path, fade_ms, self._track_start_ms.get(next_path, 0), cfg.get("curve", "Blend"))
+
+    @staticmethod
+    def _transition_key(outgoing, incoming):
+        return os.path.abspath(outgoing) + " -> " + os.path.abspath(incoming)
+
+    def _transition_duration(self, cfg):
+        if cfg:
+            # Bar-based editing uses a neutral 120 BPM reference until beat analysis is available.
+            return int(max(1, min(32, int(cfg.get("bars", 4)))) * 4 * 60_000 / 120)
+        return int(self.crossfade_slider.value()) * 1000
+
+    def _edit_transition(self, outgoing):
+        try:
+            index = self._audio_tracks.index(outgoing)
+        except ValueError:
+            return
+        if index + 1 >= len(self._audio_tracks):
+            self.status_label.setText("TRANSITION NEEDS A FOLLOWING TRACK")
+            return
+        incoming = self._audio_tracks[index + 1]
+        key = self._transition_key(outgoing, incoming)
+        dialog = TransitionDialog(os.path.basename(outgoing), os.path.basename(incoming), self._transitions.get(key, {}), self._accent_color, self)
+        if dialog.exec() == QDialog.Accepted:
+            self._transitions[key] = dialog.values()
+            self._save_queue_state()
+            self.status_label.setText(f"TRANSITION SAVED • {dialog.bars.value()} BARS • {dialog.curve.currentText().upper()}")
+
+    def _choose_accent_color(self):
+        color = QColorDialog.getColor(QColor(self._accent_color), self, "SELECT ACCENT COLOR")
+        if not color.isValid():
+            return
+        self._accent_color = color.name().upper()
+        self._settings.setValue("ui/accent", self._accent_color)
+        self._refresh_accent_button()
+        app = QApplication.instance()
+        if app is not None:
+            # One stylesheet re-polish on explicit user action; no per-frame work.
+            app.setStyleSheet(STYLE_SHEET.replace(DEFAULT_ACCENT, self._accent_color))
+        self.status_label.setText(f"ACCENT COLOR SAVED • {self._accent_color}")
+
+    def _refresh_accent_button(self):
+        if hasattr(self, "accent_button"):
+            self.accent_button.setStyleSheet(f"color:{self._accent_color}; border:1px solid {self._accent_color};")
 
     def _on_crossfade_finished(self, path):
         """Keep the logical playlist index synchronized with the active deck."""

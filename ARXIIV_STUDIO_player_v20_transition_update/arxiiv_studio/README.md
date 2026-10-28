@@ -191,6 +191,12 @@ If analysis cannot be performed for a particular file, playback continues and th
 - Video backgrounds are lazy-loaded: importing a video does not create a decoder. Only the selected video is instantiated, and inactive video decoders are released.
 - Video display copies/paints at a capped ~30 FPS and the operator preview refreshes less often to keep the control UI responsive.
 
+## Accent color and per-track transitions
+- Use **ACCENT** in the top bar to pick a saved application accent color. The stylesheet is refreshed once when the selection changes; it is not rebuilt during playback or animation.
+- Each queue tile has a **Transition** pill for the boundary to the following tile. Choose 1–32 bars and a Blend, Fade, Rise, or Slam volume curve. Settings are saved per ordered track pair in the queue state and take effect automatically at that boundary.
+- Bar duration currently uses a fixed 120 BPM reference (2 seconds per bar). The transition editor's preview shows the selected envelope; it does not audition audio.
+- The existing playback engine exposes two QMediaPlayer decks and output-volume control only. The EQ/filter choice is stored with the transition for future DSP support, but does not currently alter frequencies. Beat matching, waveform-aligned edit points, and live audio preview are not implemented.
+
 ## Стабильность и диагностика
 
 - Лог ошибок сохраняется в пользовательской папке данных приложения как
@@ -207,3 +213,15 @@ If analysis cannot be performed for a particular file, playback continues and th
 перехвачен: аварийное завершение внутри драйвера, кодека или Qt может обойти
 обработчики Python. Перед живым выступлением проверь приложение на том же ПК,
 с теми же аудиоустройствами, мониторами и видеофайлами.
+
+## DJ audio-engine development status
+
+The current player uses Qt Multimedia (`QMediaPlayer` + `QAudioOutput`) for playback and a timer-driven volume crossfade. The new `dj_audio_engine.py` module adds testable PCM mixer math and FFmpeg-based format probing/decoding, but is **not yet connected to the GUI's live output**. Do not treat it as a finished DJ engine. See `DJ_ENGINE_AUDIT_AND_PLAN.md` for verified findings, the staged migration plan, and release acceptance criteria.
+
+### Run headless engine tests
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+FFmpeg and FFprobe must be installed and available on `PATH` to use the decode/probe helpers. The production live-output backend remains a subsequent integration step.
